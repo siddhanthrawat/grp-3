@@ -1,0 +1,10 @@
+pip install streamlit pandas numpy matplotlib scikit-learn
+
+streamlit run main.py
+ 
+cd path
+git init
+git remote add origin https://github.com/your-username/swasthyanet-ai.git
+git add .
+git commit -m "Initial commit"
+git push -u origin main
