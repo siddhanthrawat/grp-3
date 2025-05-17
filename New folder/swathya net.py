@@ -3,78 +3,117 @@ import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.ensemble import RandomForestRegressor
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
 
-st.title("\U0001F9A0 SwasthyaNet AI - Disease Outbreak Predictor")
+st.title("🧠 SwasthyaNet AI - Disease Outbreak Predictor")
 st.subheader("AI-driven early warning system for infectious disease surveillance")
 
 st.sidebar.header("Simulate or Upload Data")
 data_mode = st.sidebar.radio("Choose Input Mode:", ("Simulate Synthetic Data", "Upload CSV"))
 
+# Define symptoms
+symptoms = [
+    'fever_cases',
+    'rash_cases',
+    'platelet_alerts',
+    'malnutrition_cases',
+    'conjunctivitis_cases',
+    'jaundice_cases'
+]
+
+# Load or simulate data
 if data_mode == "Simulate Synthetic Data":
     days = np.arange(30)
-    fever_cases = np.random.poisson(lam=50, size=30)
-    rash_cases = np.random.poisson(lam=5, size=30)
-    platelet_alerts = np.random.poisson(lam=2, size=30)
-
     data = pd.DataFrame({
         'day': days,
-        'fever_cases': fever_cases,
-        'rash_cases': rash_cases,
-        'platelet_alerts': platelet_alerts
+        'fever_cases': np.random.poisson(lam=50, size=30),
+        'rash_cases': np.random.poisson(lam=5, size=30),
+        'platelet_alerts': np.random.poisson(lam=2, size=30),
+        'malnutrition_cases': np.random.poisson(lam=3, size=30),
+        'conjunctivitis_cases': np.random.poisson(lam=4, size=30),
+        'jaundice_cases': np.random.poisson(lam=2, size=30),
     })
-
 else:
     uploaded_file = st.sidebar.file_uploader("Upload your CSV file", type=["csv"])
     if uploaded_file is not None:
         data = pd.read_csv(uploaded_file)
+        missing_cols = [col for col in ['day'] + symptoms if col not in data.columns]
+        if missing_cols:
+            st.error(f"Missing columns in uploaded file: {', '.join(missing_cols)}")
+            st.stop()
     else:
-        st.warning("Please upload a CSV file with columns: 'day', 'fever_cases', 'rash_cases', 'platelet_alerts'")
+        st.warning("Please upload a CSV file with columns: 'day' + symptom columns.")
         st.stop()
 
-st.write("### Clinical Data Preview:")
+# Show the actual data
+st.write("### Clinical Data Preview")
 st.dataframe(data.head())
 
-# Normalize features
+# Normalize
 scaler = MinMaxScaler()
-scaled_features = scaler.fit_transform(data[['fever_cases', 'rash_cases', 'platelet_alerts']])
+scaled_features = scaler.fit_transform(data[symptoms])
 
-# Create features and labels using sliding window
+# Prepare sequences
 X, y = [], []
 window_size = 5
 for i in range(len(scaled_features) - window_size):
-    X.append(scaled_features[i:i+window_size].flatten())
-    y.append(scaled_features[i+window_size][0])  # Predict fever_cases
+    X.append(scaled_features[i:i + window_size])
+    y.append(scaled_features[i + window_size])  # Predict all symptoms
+
 X, y = np.array(X), np.array(y)
 
-# Train Random Forest model
-model = RandomForestRegressor(n_estimators=100, random_state=42)
-model.fit(X, y)
+# LSTM model
+model = Sequential()
+model.add(LSTM(50, activation='relu', input_shape=(X.shape[1], X.shape[2])))
+model.add(Dense(len(symptoms)))
+model.compile(optimizer='adam', loss='mse')
+model.fit(X, y, epochs=100, verbose=0)
 
-# Predict next fever case
-last_sequence = scaled_features[-window_size:].flatten().reshape(1, -1)
-predicted_scaled = model.predict(last_sequence)[0]
-predicted_combined = np.array([[predicted_scaled, 0, 0]])  # Pad zeros to match scaler input
-predicted_fever = scaler.inverse_transform(predicted_combined)[0][0]
+# Predict next day
+last_sequence = scaled_features[-window_size:]
+last_sequence = np.expand_dims(last_sequence, axis=0)
+predicted_scaled = model.predict(last_sequence)
+predicted_values = scaler.inverse_transform(predicted_scaled)[0]
 
-st.success(f"Predicted Fever Cases for Day {int(data['day'].max()) + 1}: {predicted_fever:.2f}")
+# Calculate the mean of the last `window_size` days for each symptom
+historical_mean = data[symptoms].iloc[-window_size:].mean()
 
-# Alert logic
-if predicted_fever > data['fever_cases'].iloc[-1] * 1.2:
-    st.error("\U0001F6A8 ALERT: Potential Outbreak Predicted!")
+# Calculate the difference from the historical trend (mean) and the predicted value
+difference = predicted_values - historical_mean
+
+# Alert condition: If the predicted value exceeds the historical mean by 35% for any symptom
+alert_triggered = any(
+    difference[i] > historical_mean[i] * 0.35
+    for i in range(len(symptoms))
+)
+
+# Update the alert condition message based on the prediction
+if alert_triggered:
+    st.error("🚨 A disease outbreak may occur!")
 else:
-    st.info("\U0001F44D No major outbreak trend detected.")
+    st.success("👍 No major outbreak trend detected.")
 
-# Plot
-st.write("### Fever Cases vs Predicted")
-fig, ax = plt.subplots()
-ax.plot(data['day'], data['fever_cases'], label='Actual Fever Cases', marker='o')
-ax.plot([data['day'].iloc[-1] + 1], [predicted_fever],
-        label='Predicted Next Day', marker='X', markersize=10, color='red')
-ax.set_xlabel("Day")
-ax.set_ylabel("Fever Cases")
-ax.legend()
-ax.grid(True)
-st.pyplot(fig)
+# Graph-only visualization
+st.write("### Predicted Symptom Trends for Next Day")
 
-st.caption("\U0001F4A1 SwasthyaNet AI - Smart Surveillance for a Healthier Future")
+for i, symptom in enumerate(symptoms):
+    fig, ax = plt.subplots()
+    ax.plot(data['day'], data[symptom], label='Actual', marker='o')
+    ax.plot(
+        [data['day'].iloc[-1] + 1],
+        [predicted_values[i]],
+        marker='X',
+        markersize=10,
+        color='red',
+        label='Predicted'
+    )
+    ax.set_title(f"{symptom.replace('_', ' ').title()}")
+    ax.set_xlabel("Day")
+    ax.set_ylabel("Cases")
+    ax.grid(True)
+    ax.legend()
+    st.pyplot(fig)
+    
+st.caption("\U0001F4A1 Made by Siddhanth,Anish,Diagnta,Adrita & Monalisa")
